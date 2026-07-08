@@ -3,26 +3,21 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.database import get_db
-from app.models.curso import Curso, Inscricao, Modulo, ProgressoUnidade, Unidade
+from app.models.curso import AulaSincrona, Curso, Inscricao, Modulo, ProgressoUnidade, Unidade
 from app.models.usuario import Usuario
 from app.schemas.curso import (
-    CursoCreate,
-    CursoRead,
-    CursoUpdate,
-    InscricaoCreate,
-    InscricaoRead,
-    ModuloCreate,
-    ModuloRead,
-    ModuloUpdate,
-    ProgressoUnidadeCreate,
-    ProgressoUnidadeRead,
-    ProgressoUnidadeUpdate,
-    UnidadeCreate,
-    UnidadeRead,
-    UnidadeUpdate,
+    AulaSincronaCreate, AulaSincronaRead, AulaSincronaUpdate,
+    CursoCreate, CursoRead, CursoUpdate,
+    CursoArvoreRead, ModuloArvoreRead, CursoArvoreItem,
+    InscricaoCreate, InscricaoRead,
+    ModuloCreate, ModuloRead, ModuloUpdate,
+    ProgressoUnidadeCreate, ProgressoUnidadeRead, ProgressoUnidadeUpdate,
+    ReorderItem,
+    UnidadeCreate, UnidadeRead, UnidadeUpdate,
 )
 
 router = APIRouter(prefix="/cursos", tags=["Cursos"])
@@ -51,6 +46,10 @@ async def criar_curso(
     db: AsyncSession = Depends(get_db),
     _: Usuario = Depends(get_current_user),
 ):
+    if payload.pre_requisito_curso_id:
+        result = await db.execute(select(Curso).where(Curso.id == payload.pre_requisito_curso_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Curso pre-requisito nao encontrado")
     curso = Curso(**payload.model_dump())
     db.add(curso)
     await db.commit()
@@ -101,6 +100,33 @@ async def excluir_curso(
         raise HTTPException(status_code=404, detail="Curso nao encontrado")
     await db.delete(curso)
     await db.commit()
+
+
+@router.get("/{curso_id}/arvore", response_model=CursoArvoreRead)
+async def arvore_curso(
+    curso_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Curso).where(Curso.id == curso_id)
+        .options(selectinload(Curso.modulos).selectinload(Modulo.unidades))
+    )
+    curso = result.scalar_one_or_none()
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso nao encontrado")
+    modulos = [
+        ModuloArvoreRead(
+            id=m.id, titulo=m.titulo, ordem=m.ordem,
+            unidades=[
+                CursoArvoreItem(
+                    id=u.id, titulo=u.titulo, tipo=u.tipo, ordem=u.ordem,
+                    conteudo_url=u.conteudo_url, url_externa=u.url_externa,
+                ) for u in m.unidades
+            ],
+        ) for m in sorted(curso.modulos, key=lambda x: x.ordem)
+    ]
+    return CursoArvoreRead(id=curso.id, titulo=curso.titulo, modulos=modulos)
 
 
 # --- Modulos ---
@@ -157,6 +183,21 @@ async def excluir_modulo(
     if not modulo:
         raise HTTPException(status_code=404, detail="Modulo nao encontrado")
     await db.delete(modulo)
+    await db.commit()
+
+
+@router.patch("/modulos/reorder", status_code=status.HTTP_204_NO_CONTENT)
+async def reordenar_modulos(
+    payload: list[ReorderItem],
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    ids = [item.id for item in payload]
+    result = await db.execute(select(Modulo).where(Modulo.id.in_(ids)))
+    modulos = {m.id: m for m in result.scalars().all()}
+    for item in payload:
+        if item.id in modulos:
+            modulos[item.id].ordem = item.ordem
     await db.commit()
 
 
@@ -217,6 +258,139 @@ async def excluir_unidade(
     await db.commit()
 
 
+@router.patch("/unidades/reorder", status_code=status.HTTP_204_NO_CONTENT)
+async def reordenar_unidades(
+    payload: list[ReorderItem],
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    ids = [item.id for item in payload]
+    result = await db.execute(select(Unidade).where(Unidade.id.in_(ids)))
+    unidades = {u.id: u for u in result.scalars().all()}
+    for item in payload:
+        if item.id in unidades:
+            unidades[item.id].ordem = item.ordem
+    await db.commit()
+
+
+# --- Aulas Síncronas ---
+
+@router.get("/{curso_id}/aulas", response_model=list[AulaSincronaRead])
+async def listar_aulas(
+    curso_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(AulaSincrona).where(AulaSincrona.curso_id == curso_id).order_by(AulaSincrona.data_hora)
+    )
+    return result.scalars().all()
+
+
+@router.post("/{curso_id}/aulas", response_model=AulaSincronaRead, status_code=status.HTTP_201_CREATED)
+async def criar_aula(
+    curso_id: int,
+    payload: AulaSincronaCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    aula = AulaSincrona(**payload.model_dump(), criado_por=current_user.id)
+    db.add(aula)
+    await db.commit()
+    await db.refresh(aula)
+    return aula
+
+
+@router.get("/aulas/proximas", response_model=list[AulaSincronaRead])
+async def aulas_proximas(
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    from datetime import datetime, timezone
+    result = await db.execute(
+        select(AulaSincrona)
+        .where(AulaSincrona.data_hora >= datetime.now(timezone.utc))
+        .order_by(AulaSincrona.data_hora)
+        .limit(20)
+    )
+    return result.scalars().all()
+
+
+@router.patch("/aulas/{aula_id}", response_model=AulaSincronaRead)
+async def atualizar_aula(
+    aula_id: int,
+    payload: AulaSincronaUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    result = await db.execute(select(AulaSincrona).where(AulaSincrona.id == aula_id))
+    aula = result.scalar_one_or_none()
+    if not aula:
+        raise HTTPException(status_code=404, detail="Aula nao encontrada")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(aula, field, value)
+    await db.commit()
+    await db.refresh(aula)
+    return aula
+
+
+@router.delete("/aulas/{aula_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def excluir_aula(
+    aula_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    result = await db.execute(select(AulaSincrona).where(AulaSincrona.id == aula_id))
+    aula = result.scalar_one_or_none()
+    if not aula:
+        raise HTTPException(status_code=404, detail="Aula nao encontrada")
+    await db.delete(aula)
+    await db.commit()
+
+
+# --- Chat ---
+
+@router.get("/{curso_id}/chat", response_model=list[dict])
+async def listar_chat(
+    curso_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    from app.models.curso import MensagemCurso
+    result = await db.execute(
+        select(MensagemCurso)
+        .where(MensagemCurso.curso_id == curso_id)
+        .order_by(MensagemCurso.criado_em.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    msgs = result.scalars().all()
+    msgs.reverse()
+    return [{"id": m.id, "usuario_id": str(m.usuario_id), "texto": m.texto, "criado_em": m.criado_em.isoformat()} for m in msgs]
+
+
+@router.post("/{curso_id}/chat", status_code=status.HTTP_201_CREATED)
+async def enviar_mensagem(
+    curso_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    from app.models.curso import MensagemCurso
+    texto = payload.get("texto", "").strip()
+    if not texto:
+        raise HTTPException(status_code=422, detail="Texto nao pode ser vazio")
+    if len(texto) > 2000:
+        raise HTTPException(status_code=422, detail="Texto muito longo (max 2000)")
+    msg = MensagemCurso(curso_id=curso_id, usuario_id=current_user.id, texto=texto)
+    db.add(msg)
+    await db.commit()
+    await db.refresh(msg)
+    return {"id": msg.id, "usuario_id": str(msg.usuario_id), "texto": msg.texto, "criado_em": msg.criado_em.isoformat()}
+
+
 # --- Inscricoes ---
 
 @router.post("/inscricoes", response_model=InscricaoRead, status_code=status.HTTP_201_CREATED)
@@ -225,6 +399,20 @@ async def inscrever(
     db: AsyncSession = Depends(get_db),
     _: Usuario = Depends(get_current_user),
 ):
+    curso = await db.execute(select(Curso).where(Curso.id == payload.curso_id))
+    curso = curso.scalar_one_or_none()
+    if not curso:
+        raise HTTPException(status_code=404, detail="Curso nao encontrado")
+    if curso.pre_requisito_curso_id:
+        prereq = await db.execute(
+            select(Inscricao).where(
+                Inscricao.curso_id == curso.pre_requisito_curso_id,
+                Inscricao.usuario_id == payload.usuario_id,
+                Inscricao.status == "concluido",
+            )
+        )
+        if not prereq.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Pre-requisito nao concluido")
     inscricao = Inscricao(**payload.model_dump())
     db.add(inscricao)
     await db.commit()

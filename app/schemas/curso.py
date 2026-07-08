@@ -101,6 +101,8 @@ class UnidadeBase(BaseModel):
     tipo: str
     ordem: int = 0
     duracao_estimada: int | None = None
+    conteudo_url: str | None = None
+    url_externa: str | None = None
 
 
 class UnidadeCreate(UnidadeBase):
@@ -112,6 +114,8 @@ class UnidadeUpdate(BaseModel):
     tipo: str | None = None
     ordem: int | None = None
     duracao_estimada: int | None = None
+    conteudo_url: str | None = None
+    url_externa: str | None = None
 
 
 class UnidadeRead(UnidadeBase):
@@ -163,6 +167,78 @@ class ProgressoUnidadeRead(ProgressoUnidadeBase):
     criado_em: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AulaSincronaBase(BaseModel):
+    curso_id: int
+    titulo: str
+    descricao: str | None = None
+    data_hora: datetime
+    link_externo: str | None = None
+    duracao_minutos: int | None = None
+    status: str = "agendada"
+
+
+class AulaSincronaCreate(AulaSincronaBase):
+    pass
+
+
+class AulaSincronaUpdate(BaseModel):
+    titulo: str | None = None
+    descricao: str | None = None
+    data_hora: datetime | None = None
+    link_externo: str | None = None
+    duracao_minutos: int | None = None
+    status: str | None = None
+
+
+class AulaSincronaRead(AulaSincronaBase):
+    id: int
+    criado_por: uuid.UUID | None = None
+    criado_em: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MensagemCursoCreate(BaseModel):
+    texto: str
+
+
+class MensagemCursoRead(BaseModel):
+    id: int
+    curso_id: int
+    usuario_id: str
+    texto: str
+    criado_em: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CursoArvoreItem(BaseModel):
+    id: int
+    titulo: str
+    tipo: str
+    ordem: int
+    conteudo_url: str | None = None
+    url_externa: str | None = None
+
+
+class ModuloArvoreRead(BaseModel):
+    id: int
+    titulo: str
+    ordem: int
+    unidades: list[CursoArvoreItem]
+
+
+class CursoArvoreRead(BaseModel):
+    id: int
+    titulo: str
+    modulos: list[ModuloArvoreRead]
+
+
+class ReorderItem(BaseModel):
+    id: int
+    ordem: int
 
 
 class InscricaoTrilhaCreate(BaseModel):
