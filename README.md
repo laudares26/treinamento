@@ -156,4 +156,4 @@ Veja `scripts/init_db.sql` para DDL completo, extensões (`pgcrypto`, `citext`),
 
 ## Progresso
 
-**15/62 tarefas do roadmap concluídas (24.2%).** US-01 (fundação) ✅, US-02 (credenciamento) ✅, US-03 (RBAC) ✅.
+**23/72 tarefas do roadmap concluídas (31.9%).** US-01 (fundação) ✅, US-02 (credenciamento) ✅, US-03 (RBAC) ✅, US-04 (trilhas) ✅, US-05 (cursos avançado) ✅.
