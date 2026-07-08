@@ -39,10 +39,12 @@ Acesse `/docs` (Swagger UI) ou `/redoc`.
 
 | Método | Rota | Descrição |
 |--------|------|-----------|
-| POST | `/api/v1/auth/registro` | Cria conta com perfil **participante** (ativa imediatamente) |
-| POST | `/api/v1/auth/registro-com-perfil` | Cria conta com **solicitação pendente** — precisa aprovação |
+| POST | `/api/v1/auth/registro` | Cria conta com perfil **participante** (ativa imediatamente, exige `aceite_lgpd=true`) |
+| POST | `/api/v1/auth/registro-com-perfil` | Cria conta com **solicitação pendente** — precisa aprovação (exige `aceite_lgpd=true`) |
 | POST | `/api/v1/auth/login` | Login → JWT |
 | POST | `/api/v1/auth/logout` | Logout (cliente remove token) |
+| POST | `/api/v1/auth/esqueci-senha` | Envia link de redefinição por email |
+| POST | `/api/v1/auth/redefinir-senha` | Redefine senha com token recebido |
 | GET | `/api/v1/credenciamento/solicitacoes/pendentes` | Lista solicitações aguardando aprovação |
 | POST | `/api/v1/credenciamento/solicitacoes/{id}/aprovar` | Aprova solicitação |
 | POST | `/api/v1/credenciamento/solicitacoes/{id}/rejeitar` | Rejeita solicitação |
@@ -59,6 +61,8 @@ Acesse `/docs` (Swagger UI) ou `/redoc`.
 | POST | `/api/v1/usuarios/criar-subordinado` | **[Gestor]** Cria conta participante já aprovada |
 | GET | `/api/v1/usuarios/perfis/todos` | Lista todos os perfis |
 | POST | `/api/v1/usuarios/perfis` | Criar perfil |
+| PATCH | `/api/v1/usuarios/perfis/{id}` | Atualizar perfil |
+| DELETE | `/api/v1/usuarios/perfis/{id}` | Excluir perfil (impedido se houver usuários vinculados) |
 | POST | `/api/v1/usuarios/perfis/atribuir` | Atribuir perfil a usuário |
 
 ### Sandbox do Instrutor
@@ -70,12 +74,37 @@ Acesse `/docs` (Swagger UI) ou `/redoc`.
 | GET | `/api/v1/sandbox/ativo` | Verifica se há sessão ativa |
 | GET | `/api/v1/sandbox/sessoes` | Histórico de sessões |
 
+### Cursos (US-05)
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET/POST | `/api/v1/cursos` | Listar/criar cursos (valida pré-requisito) |
+| GET/PATCH/DELETE | `/api/v1/cursos/{id}` | Obter/atualizar/excluir curso |
+| GET | `/api/v1/cursos/{id}/arvore` | Árvore aninhada: curso → módulos → unidades |
+| GET/POST | `/api/v1/cursos/{id}/modulos` | Listar/criar módulos |
+| PATCH/DELETE | `/api/v1/cursos/modulos/{id}` | Atualizar/excluir módulo |
+| PATCH | `/api/v1/cursos/modulos/reorder` | Reordenar módulos em lote |
+| GET | `/api/v1/cursos/modulos/{modulo_id}/unidades` | Listar unidades |
+| POST/PATCH/DELETE | `/api/v1/cursos/unidades/{id}` | CRUD de unidades |
+| PATCH | `/api/v1/cursos/unidades/reorder` | Reordenar unidades em lote |
+| GET/POST | `/api/v1/cursos/{id}/aulas` | Listar/criar aulas síncronas |
+| PATCH/DELETE | `/api/v1/cursos/aulas/{id}` | Atualizar/excluir aula |
+| GET | `/api/v1/cursos/aulas/proximas` | Próximas aulas do usuário logado |
+| GET/POST | `/api/v1/cursos/{id}/chat` | Histórico (paginado) / enviar mensagem |
+| GET | `/api/v1/cursos/{id}/chat/stream` | SSE — mensagens em tempo real (event-stream) |
+| POST | `/api/v1/cursos/inscricoes` | Inscrever (valida pré-requisito concluído, 403 se não) |
+
+**Chat:** Contínuo por curso (estilo WhatsApp). 1 tabela `mensagens_curso`. Histórico completo no PostgreSQL. SSE pra tempo real — conexão HTTP aberta, servidor empurra mensagens novas instantaneamente, cliente reconecta automático.
+
+**Armazenamento:** PDFs, vídeos e materiais ficam em storage externo (S3). O banco guarda só a URL em `conteudo_url TEXT`. Upload é implementação futura.
+
+**XR:** `url_externa TEXT` na Unidade redireciona para plataforma externa do grupo XR.
+
 ### Domínios Funcionais (CRUD base)
 
 | Prefixo | Domínio |
 |---------|---------|
 | `/api/v1/trilhas` | Trilhas de aprendizagem |
-| `/api/v1/cursos` | Cursos, módulos, unidades, inscrições, progresso |
 | `/api/v1/conteudos` | Conteúdos e materiais complementares |
 | `/api/v1/avaliacoes` | Avaliações, questões, alternativas, respostas, resultados |
 | `/api/v1/gamificacao` | XP, badges, missões, streaks, leaderboard |
