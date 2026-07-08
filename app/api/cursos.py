@@ -1,13 +1,25 @@
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.database import get_db
-from app.models.curso import AulaSincrona, Curso, Inscricao, Modulo, ProgressoUnidade, Unidade
+from app.models.curso import AulaSincrona, Curso, Inscricao, MensagemCurso, Modulo, ProgressoUnidade, Unidade
+from app.schemas.curso import (
+    AulaSincronaCreate, AulaSincronaRead, AulaSincronaUpdate,
+    CursoCreate, CursoRead, CursoUpdate,
+    CursoArvoreRead, ModuloArvoreRead, CursoArvoreItem,
+    InscricaoCreate, InscricaoRead,
+    MensagemCursoCreate, MensagemCursoRead,
+    ModuloCreate, ModuloRead, ModuloUpdate,
+    ProgressoUnidadeCreate, ProgressoUnidadeRead, ProgressoUnidadeUpdate,
+    ReorderItem,
+    UnidadeCreate, UnidadeRead, UnidadeUpdate,
+)
 from app.models.usuario import Usuario
 from app.schemas.curso import (
     AulaSincronaCreate, AulaSincronaRead, AulaSincronaUpdate,
@@ -346,6 +358,44 @@ async def excluir_aula(
         raise HTTPException(status_code=404, detail="Aula nao encontrada")
     await db.delete(aula)
     await db.commit()
+
+
+# --- Chat SSE ---
+
+@router.get("/{curso_id}/chat/stream")
+async def stream_chat(
+    curso_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(get_current_user),
+):
+    from fastapi.responses import StreamingResponse
+    last_id = 0
+
+    async def event_generator():
+        nonlocal last_id
+        while True:
+            if await request.is_disconnected():
+                break
+            result = await db.execute(
+                select(MensagemCurso)
+                .where(MensagemCurso.curso_id == curso_id, MensagemCurso.id > last_id)
+                .order_by(MensagemCurso.criado_em)
+            )
+            novas = result.scalars().all()
+            for msg in novas:
+                last_id = msg.id
+                data = {
+                    "id": msg.id,
+                    "usuario_id": str(msg.usuario_id),
+                    "texto": msg.texto,
+                    "criado_em": msg.criado_em.isoformat(),
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+            import asyncio
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # --- Chat ---
