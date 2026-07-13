@@ -126,7 +126,7 @@ class MensagemCurso(Base):
 
 class AulaSincrona(Base):
     __tablename__ = "aulas_sincronas"
-    __table_args__ = {"schema": "lms"}
+    __table_args__ = {"schema": "lms", "extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     curso_id: Mapped[int] = mapped_column(Integer, ForeignKey("lms.cursos.id", ondelete="CASCADE"), nullable=False)
@@ -136,6 +136,8 @@ class AulaSincrona(Base):
     link_externo: Mapped[str | None] = mapped_column(Text)
     duracao_minutos: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="agendada")
+    teams_meeting_id: Mapped[str | None] = mapped_column(String(200))
+    gravacao_conteudo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("lms.conteudos.id"))
     criado_por: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("lms.usuarios.id"))
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

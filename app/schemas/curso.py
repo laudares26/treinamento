@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from decimal import Decimal
+
 
 from pydantic import BaseModel
 
@@ -125,22 +125,20 @@ class UnidadeRead(UnidadeBase):
     model_config = {"from_attributes": True}
 
 
-class InscricaoBase(BaseModel):
-    usuario_id: uuid.UUID
+class InscricaoCreate(BaseModel):
+    usuario_id: uuid.UUID | None = None
     curso_id: int
 
 
-class InscricaoCreate(InscricaoBase):
-    pass
-
-
-class InscricaoRead(InscricaoBase):
+class InscricaoRead(BaseModel):
     id: int
+    usuario_id: uuid.UUID
+    curso_id: int
     status: str
-    progresso_pct: Decimal
+    progresso_pct: float
     data_inscricao: datetime
     data_conclusao: datetime | None = None
-    nota_final: Decimal | None = None
+    nota_final: float | None = None
 
     model_config = {"from_attributes": True}
 
@@ -177,10 +175,11 @@ class AulaSincronaBase(BaseModel):
     link_externo: str | None = None
     duracao_minutos: int | None = None
     status: str = "agendada"
+    teams_meeting_id: str | None = None
 
 
 class AulaSincronaCreate(AulaSincronaBase):
-    pass
+    criar_reuniao_teams: bool = False
 
 
 class AulaSincronaUpdate(BaseModel):
@@ -250,7 +249,7 @@ class InscricaoTrilhaRead(BaseModel):
     usuario_id: uuid.UUID
     trilha_id: int
     status: str
-    progresso_pct: Decimal
+    progresso_pct: float
     data_inscricao: datetime
     data_conclusao: datetime | None = None
 
@@ -264,7 +263,7 @@ class TrilhaProgressoRead(BaseModel):
     carga_horaria_total: int | None = None
     total_cursos: int
     cursos_concluidos: int
-    progresso_pct: Decimal
+    progresso_pct: float
     status: str
     data_inscricao: datetime | None = None
     data_conclusao: datetime | None = None
