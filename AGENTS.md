@@ -38,10 +38,10 @@ The app **also auto-creates tables, seeds profiles and niveis** on startup via F
 
 ## Dev Workflow
 
-- **Tests:** 19 test files with 1,600+ lines covering auth, RBAC, US-04/05/06/07, bug fixes, and other modules. Run with `pytest`.
+- **Tests:** 35 test files (auth, RBAC, US-04..08, US-11..17, fixes). Run with `pytest`.
 - **Test Database:** Uses `TEST_DATABASE_URL` (database-2, senha separada) — isolado do dev. Bucket S3 de teste: `lms-conteudos-teste`.
 - **Test infrastructure:** `pytest.ini` uses `asyncio_default_test_loop_scope = session`. Raw ASGI middleware (no BaseHTTPMiddleware). `db_clean` fixture uses separate engine to avoid pool corruption. `event_loop` fixture is session-scoped. Tests override `STORAGE_BACKEND=local`.
-- **No linter/formatter/typechecker config** — no ruff, flake8, mypy, black, isort. CI only checks that `from app.main import app` works.
+- **Ruff IS configured and enforced in CI** (`pyproject.toml`) — run `ruff check .` and `ruff format --check .` before pushing. CI also does an import smoke-test (`from app.main import app`) and runs pytest against a real Postgres service container. (No mypy/black/isort.)
 - **CI** (`.github/workflows/ci.yml`): runs on push/PR to `main`, installs deps, runs `python -c "from app.main import app; print(len(app.routes))"`.
 - **Deploy** (`fly.io`): `fly deploy` via GitHub Actions or manually. Dockerfile serves on port 8080.
 
@@ -97,31 +97,30 @@ All routes are under `/api/v1`. `main.py` passes `prefix=PREFIX` to each `includ
 
 ## Project State
 
-- **Branch:** `devin/1782154515-backend-lms` (development branch)
-- **Current work branch:** `fix/paginacao-e-busca` (issues #26/#27 — not yet merged)
-- **Production Branch:** `main` (PR → deploy)
-- **Roadmap:** 31/72 tasks done (43%). US-04 ✅, US-05 ✅, US-06 ✅, US-07 ✅, Pendências Técnicas ✅, Issues #21/#22/#23 ✅.
-- **Next up:** US-08 (Sistema de Avaliações — issue #25)
-- **Known issues:** SMTP não configurado (#24) — `esqueci-senha` não envia emails
-- **Previous milestones:** Credenciamento flow (tasks 18-26), RBAC (tasks 17.2-17.3, 30.1), US-04 (Trilhas), US-05 (Cursos avançado), US-06 (Upload S3/Conteúdos), US-07 (Progresso cascade).
-- **Structure of Courses & Trails:** FULLY IMPLEMENTED (TrilhaAprendizagem, Curso, Modulo, Unidade, Inscricao, ProgressoUnidade, InscricaoTrilha, MensagemCurso, AulaSincrona)
-- **Endpoints for Trails:** FULLY IMPLEMENTED (GET/POST/PATCH/DELETE /api/v1/trilhas + inscrever/progresso/minhas-trilhas)
-- **Endpoints for Courses:** FULLY IMPLEMENTED (complete CRUD for cursos, modulos, unidades, inscricoes, progresso, aulas, chat, consumo, arvore)
-- **Storage:** S3 (aioboto3) or local disk for uploads (videos, PDFs, SCORM, materials, deliveries)
-- **Teams Integration:** Microsoft Graph API for synchronous classes (optional, fallback to manual links)
-- **SCORM Support:** Complete implementation (PacoteScorm, TrackingScorm, launch, tracking, reports)
-- **5 Alembic migrations** exist: from `001_add_credenciamento_fields` to `005_add_telefone_unique_constraint`. Chain new ones with `down_revision` pointing to `'005_add_telefone_unique_constraint'`.
-- **`scripts/init_db.sql`** creates the `lms` schema, extensions (`pgcrypto`, `citext`), seeds profiles/niveis, and adds performance indexes — it is idempotent (uses `ON CONFLICT DO NOTHING`).
+- **Base branches:** `development` (principal), `homologacao`, `devin/1782154515-backend-lms`, `main` (production, PR → deploy).
+- **Work branches (fix/feature):** created from `development`, one per batch of issues, deleted after merging. None open as of 09/09/2026.
+- **`devin/...`** is a "resguardo" (backup) branch kept in sync with `development`; not a deploy target.
+- **Deploy flow:** pushing `development` deploys **dev**, `homologacao` deploys **hom** — GitHub Actions → tarball to S3 → AWS SSM → `docker build` + `docker compose up` on EC2 (`i-03226a7435365244a`). No approval gate.
+- **THE DEPLOY DOES NOT RUN MIGRATIONS.** There is no `alembic` step in `deploy.yml` nor in the `Dockerfile`. Apply `alembic upgrade head` against the target DB **yourself, before** the push — see Convictions.
+- **`/health`** now includes `check_migrations` and `check_database`/`check_storage`. `check_migrations` is intentionally excluded from the overall status: the deploy uses HTTP 200 as gate and a stale schema shouldn't fail the app. `GET /health` checks DB reachability and S3 access.
+- **Roadmap:** US-04 ✅, US-05 ✅, US-06 ✅, US-07 ✅, US-08 ✅, Pendências Técnicas ✅, US-11/12/13/14 ✅, US-15/16/17 ✅ (certificados, dashboards/analytics, logs de auditoria). Issues 17-24, 25-31 done.
+- **Known issues:** SMTP não configurado (`esqueci-senha` não envia emails). Teams: código pronto mas **não configurado** — precisa das 4 vars (`TEAMS_*`) no ambiente do deploy + Application Access Policy (PowerShell) do organizer; até lá `criar_reuniao_teams:true` retorna 422.
+- **Alembic migrations:** 20 migrations. Head atual: `c7d3e9a1f204` (`conteudo_disponivel_marca_bucket_morto_issue_46`). Chain new ones with `down_revision` pointing to the current head — **never** to an old anchor.
+- **`scripts/init_db.sql`** creates the `lms` schema, extensions (`pgcrypto`, `citext`), seeds profiles/niveis, and adds performance indexes — idempotent (`ON CONFLICT DO NOTHING`).
 
 ## Convictions
 
 - **Testar o boot da app localmente antes de qualquer merge é obrigatório** — rodar o `lifespan`/start (ex.: `async with lifespan(app)`) para validar create_all + seeds. Incidente 14/08: seed sem coluna NOT NULL crashava o start e derrubou hom/dev (502).
+- **O `create_all()` do boot cria TABELA que falta, nunca COLUNA nem ÍNDICE** — e o deploy não roda migration. Migration que cria tabela fica satisfeita por acidente e o `alembic_version` nunca avança; migration que adiciona coluna não é satisfeita por nada. O banco fica híbrido e o sintoma só aparece quando um endpoint faz `select()` e devolve 500 genérico. **Incidente 08-09/09/2026:** `/cursos/{id}/consumo` 500 em todo curso no dev (faltava `conteudos.disponivel`); o hom ficou **7 dias quebrado em silêncio** na presença (faltava `presenca_aula.saida_estimada`), com deploys reportando sucesso porque o gate só checa HTTP 200. Post-mortem: issue #69.
+- **Rode `alembic upgrade head` no banco alvo ANTES do push que dispara o deploy** — com `--sql` (dry-run) e backup antes, em hom/prod. Conferir depois com `alembic current` e `GET /health` → `checks.migrations`.
+- **Se um ambiente estiver dessincronizado, não rode `upgrade head` direto** — ele tenta recriar tabelas que o `create_all` já fez e falha com "already exists". Reconcilie: `upgrade <rev que falta de verdade>` → `stamp <rev cujas tabelas já existem>` → `upgrade head`. **Antes do `stamp`, compare coluna a coluna E os índices** — o que o stamp pula, o alembic nunca mais aplica (foi assim que o `ix_notificacoes_usuario_id` quase se perdeu no hom).
+- **Model e migration têm que contar a mesma história** — se a migration cria um índice, o model precisa declará-lo, senão todo banco nascido do `create_all` nasce sem. Cuidado com `index=True`: ele gera `ix_<schema>_<tabela>_<coluna>`, nome diferente do que a migration costuma usar — prefira `Index("<nome exato da migration>", "<coluna>")` no `__table_args__`.
 - **Seed via SQL puro: TODAS as colunas NOT NULL explícitas** — o default do model SQLAlchemy não vale em `INSERT` via `text()`; sem isso o start crasha com `NotNullViolationError`.
 - Always add imports in `__init__.py` for new models/schemas.
-- Chain new migrations with `down_revision` pointing to latest migration (currently `'005_add_telefone_unique_constraint'`).
+- Chain new migrations with `down_revision` pointing to the current head (see Project State), never an old anchor.
 - Use Pydantic v2 style (no `orm_mode`, use `model_config`).
 - SQLAlchemy 2.0 style — use `select()`, `await db.execute()`, no `Query` API.
-- Run tests with `pytest` before major changes — 19 test files with 1,600+ lines of coverage.
+- Run tests with `pytest` before major changes — 35 test files. Tests are slow (many require the PostgreSQL test DB) and can be flaky if the network/IP for the DB (AWS security group) is stale.
 - **When modifying a model (adding field/constraint):**
   - [ ] Verify schema Pydantic reflects the change
   - [ ] Verify API response model includes the field
@@ -442,26 +441,64 @@ Todas as 8 issues levantadas pelo front foram corrigidas, validadas em dev e hom
 - **23** — leaderboard exclui perfis de gestão (`NOT IN` 5 perfis administrativos, não filtro por participante); valida `origem` de XP contra `EVENTOS_XP` + chama `atribuir_xp`; rota `GET /leaderboard/minha-posicao` (posição mesmo fora do top N, `no_ranking: true` quando fora do grupo, XP medido no mesmo conjunto filtrado)
 - **24** — `GET /leaderboard?curso_id=N` filtra ranking pelos inscritos do curso (turma = `lms.inscricoes`)
 
+### US-15: Certificados Digitais ✅ CONCLUÍDA
+- **T-15.1** — Modelos personalizáveis (HTML template) + seed de modelo padrão (cria on-demand se faltar)
+- **T-15.2** — Emissão automática ao concluir o curso (sem duplicar: usuario_id+curso_id; emite com ou sem avaliação)
+- **T-15.3** — PDF via reportlab (paisagem): nome, CPF mascarado, prefeitura, curso, carga horária, nota, data, código
+- **T-15.4** — QR Code (lib `qrcode`) + hash SHA-256
+- **T-15.5** — Página pública de validação `GET /certificados/validar/{hash}/pagina` (HTML, sem login)
+- **T-15.6** — `GET /certificados/meus` (participante, sem permissão admin)
+- **T-15.7** — 8 testes (`tests/test_us15.py`). Dep `qrcode>=7.4`.
+
+### US-16: Dashboards e Analytics ✅ CONCLUÍDA
+- **T-16.1** — Coleta diária de métricas (job asyncio 1x/dia no lifespan + `POST /dashboard/metricas/coletar` para backlog); `app/services/analytics.py`
+- **T-16.2** — `GET /dashboard/kpis`: inscritos, concluídos, evasão, taxa, nota média (filtros período/curso)
+- **T-16.3** — `GET /dashboard/graficos/temporal` (dia/semana/mês)
+- **T-16.4** — `GET /dashboard/relatorios/desempenho` (curso/trilha)
+- **T-16.5** — `GET /dashboard/relatorios/presenca` (consolidado por período)
+- **T-16.6** — `formato=csv|pdf` nos relatórios (helpers `_csv_stream`/`_pdf_simples`)
+- **T-16.7** — filtros dinâmicos (período, curso, perfil); **RBAC** `dashboard:kpis/graficos/relatorios` para gestor+admin+auditor
+- **T-16.8** — 16 testes (`tests/test_us16.py`)
+
+### US-17: Logs de Auditoria e Rastreabilidade ✅ CONCLUÍDA
+- **T-17.1** — `log_acesso` em operações de escrita (middleware em `app/main.py` grava POST/PATCH/DELETE/PUT com usuário do token; login usa `app/services/log_acesso.py`)
+- **T-17.2** — `log_auditoria` via código (não trigger): `app/services/auditoria.py` (`registrar_auditoria`/`auditar_escrita`) chamado nos CRUD de cursos, usuarios, trilhas, avaliacoes, badges, missoes, inscricoes — snapshot `dados_anteriores`/`dados_novos`
+- **T-17.3/17.4** — `GET /auditoria/logs` com filtros (tabela, usuário, ação, período) + paginação
+- **T-17.5** — exportação `formato=csv|pdf` dos logs
+- **T-17.6** — 7 testes (`tests/test_us17.py`). RBAC `auditoria:visualizar` (admin + auditor)
+
+### Issues 25-31 (ciclo de fixes 26/08-04/09) ✅ CONCLUÍDAS
+- **25** — aulas ao vivo (11 pontos): código de acesso escondido (`_aula_read_para`), entrar valida inscrição+sem duplicar, silenciar por aula (`usuario_aula_silenciado`), acessar não grava presença, próximas por inscrição, X-Forwarded-For, token WS via subprotocolo, minhas-presencas, resumo do filtro, `saida_estimada`+presente por permanência mínima (migration `ad9d802fbf09`)
+- **26** — Teams: aviso 422 quando `criar_reuniao_teams:true` e não configurado; **infra pendente** (4 vars `TEAMS_*` no deploy + Application Access Policy)
+- **27** — WS da aula transmite presença (`_broadcast_presenca` entrou/saiu + `presenca_inicial` no accept)
+- **28** — notificações: tabela `lms.notificacoes` + `app/services/notificacoes.py` + `GET /notificacoes`, `PATCH /{id}/lida`, `POST /marcar-todas-lidas`; disparo em aula agendada e gravação disponível
+- **29** — login 500 ao cruzar critério de missão: recursão em `atribuir_xp`→`atualizar_progresso_missoes` corrigida com `checar_missoes=False` na recompensa
+- **30** — fechada (falso positivo: rotas do dashboard eram da US-16)
+- **31** — presença: `PresencaAula` é a fonte oficial; `sessoes/presenca` marcadas `deprecated=True` (legado)
+
 ## Próximas Prioridades (segundo ROADMAP.md)
 
 - Estrutura Organizacional (estados, municípios, secretarias, unidades)
 - Dashboards específicos por perfil (Gestor, Instrutor, Administrador Geral)
 - Relatórios avançados (por município, secretaria, trilha)
-- Sistema de notificações
 
 **Backend core está praticamente completo:**
 - ✅ Autenticação e credenciamento hierárquico
-- ✅ Sistema RBAC com 38 permissões
+- ✅ Sistema RBAC (88 permissões)
 - ✅ Trilhas de aprendizagem com progresso
 - ✅ Cursos completos (módulos, unidades, aulas síncronas, chat)
 - ✅ Upload de conteúdos multimídia (S3/local)
 - ✅ SCORM completo
 - ✅ Entregas de atividades
-- ✅ Gamificação básica
+- ✅ Gamificação (badges, missões, níveis, leaderboard, streak)
 - ✅ Progresso cascade (unidade → curso → trilha)
-- ✅ Integração Teams (opcional)
-- ✅ Recuperação de senha
-- ✅ Testes abrangentes (19 arquivos, 1.600+ linhas)
+- ✅ Notificações (issue 28)
+- ✅ Logs de auditoria (US-17)
+- ✅ Certificados digitais (US-15)
+- ✅ Dashboards/analytics (US-16)
+- ✅ Integração Teams (opcional — requer infra)
+- ✅ Recuperação de senha (SMTP config)
+- ✅ Testes abrangentes (35 arquivos)
 
 ## T-06.10: Integração Teams + Artefato S3 (14/07/2026)
 
