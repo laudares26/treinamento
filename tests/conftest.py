@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import uuid
 
@@ -6,6 +7,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from starlette.websockets import WebSocketDisconnect
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "480")
@@ -189,6 +191,136 @@ async def admin_token(admin_user):
     return create_access_token(
         data={"sub": str(admin_user.id), "email": admin_user.email},
     )
+
+
+class _AsyncWebSocketConnection:
+    """Cliente WebSocket ASGI async — roda a app no MESMO loop do pytest (sem
+    thread, sem lifespan, sem conflito de loop). Emula a interface do
+    TestClient.websocket_connect, mas assíncrona.
+    """
+
+    def __init__(self, app, path: str, subprotocols: list[str] | None = None):
+        self._app = app
+        self._path = path
+        self._subprotocols = subprotocols or []
+        self._from_app: asyncio.Queue = asyncio.Queue()  # app -> cliente
+        self._to_app: asyncio.Queue = asyncio.Queue()  # cliente -> app
+        self._task: asyncio.Task | None = None
+
+    # --- callables passados para o app (interface ASGI) ---
+    # O app chama `receive()` para ler mensagens do cliente e `send(msg)` para
+    # entregar mensagens ao cliente.
+
+    async def _receive(self):
+        # O que o cliente envia -> fila `_to_app`.
+        return await self._to_app.get()
+
+    async def _send(self, message):
+        # O que o app envia -> fila `_from_app`.
+        await self._from_app.put(message)
+
+    # --- cliente ---
+
+    async def _open(self):
+        # Separa path e query string (?token=...) como o servidor faria.
+        raw_path = self._path
+        query_string = b""
+        if "?" in raw_path:
+            path_part, query_part = raw_path.split("?", 1)
+            raw_path = path_part
+            query_string = query_part.encode()
+        headers = [
+            (b"host", b"testserver"),
+            (b"connection", b"upgrade"),
+            (b"upgrade", b"websocket"),
+            (b"sec-websocket-key", b"test"),
+            (b"sec-websocket-version", b"13"),
+        ]
+        if self._subprotocols:
+            headers.append((b"sec-websocket-protocol", ", ".join(self._subprotocols).encode()))
+        scope = {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "scheme": "ws",
+            "path": raw_path,
+            "raw_path": raw_path.encode(),
+            "root_path": "",
+            "query_string": query_string,
+            "headers": headers,
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+            "subprotocols": self._subprotocols,
+        }
+        self._task = asyncio.create_task(self._app(scope, self._receive, self._send))
+        # Handshake: envia "connect" e aguarda "accept" ou "close".
+        await self._to_app.put({"type": "websocket.connect"})
+        while True:
+            message = await self._from_app.get()
+            if message["type"] == "websocket.accept":
+                return
+            if message["type"] == "websocket.close":
+                raise WebSocketDisconnect(code=message.get("code", 1000))
+
+    async def _close(self):
+        # Avisa a app que o cliente fechou a conexao e espera a task terminar.
+        try:
+            self._to_app.put_nowait({"type": "websocket.disconnect", "code": 1000})
+        except Exception:
+            pass
+        if self._task and not self._task.done():
+            try:
+                await asyncio.wait_for(self._task, timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def send_json(self, payload):
+        await self._to_app.put({"type": "websocket.receive", "text": json.dumps(payload)})
+
+    async def receive_json(self):
+        while True:
+            message = await self._from_app.get()
+            if message["type"] == "websocket.send":
+                return json.loads(message["text"])
+            if message["type"] == "websocket.close":
+                raise WebSocketDisconnect(code=message.get("code", 1000))
+
+    async def __aenter__(self):
+        await self._open()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._close()
+
+
+@pytest_asyncio.fixture
+async def ws_client(client):
+    """Cliente WebSocket ASGI async para testes.
+
+    Roda a app no mesmo event loop do pytest-asyncio — sem thread separada, sem
+    `lifespan` (o banco de teste ja tem as tabelas), sem cruzar loops. Com isso,
+    o `RuntimeError: attached to a different loop` (TestClient sincrono + WS +
+    pytest-asyncio) deixa de existir e os testes WS ficam deterministicos, mesmo
+    em lote.
+    """
+    from app.main import app
+
+    class _WSClient:
+        def websocket_connect(self, path: str, subprotocols: list[str] | None = None):
+            return _AsyncWebSocketConnection(app, path, subprotocols)
+
+    yield _WSClient()
+    # Limpa o registro global de conexoes WS para nao vazar entre testes.
+    try:
+        from app.api.cursos import _ws_connections
+
+        _ws_connections.clear()
+    except Exception:
+        pass
 
 
 @pytest_asyncio.fixture

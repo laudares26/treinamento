@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import logging.config
 from contextlib import asynccontextmanager
@@ -139,13 +140,14 @@ async def lifespan(application: FastAPI):
 
         # Seed permissions for each profile (RBAC)
         for perfil_nome, permissoes in PERFIL_PERMISSOES.items():
-            permissoes_json = "{" + ", ".join(f'"{p}": true' for p in permissoes) + "}"
+            permissoes_json = {p: True for p in permissoes}
             await conn.execute(
-                text(f"""
+                text("""
                 UPDATE lms.perfis
-                SET permissoes = '{permissoes_json}'::jsonb
-                WHERE nome = '{perfil_nome}'
-            """)
+                SET permissoes = CAST(:permissoes AS jsonb)
+                WHERE nome = :nome
+            """),
+                {"permissoes": json.dumps(permissoes_json), "nome": perfil_nome},
             )
 
         # Seed termos bloqueados do forum (US-14) — apenas se tabela vazia
@@ -157,13 +159,14 @@ async def lifespan(application: FastAPI):
         # Seed modelo padrao de certificado (US-15) — apenas se tabela vazia
         from app.services.certificado_templates import TEMPLATE_CERTIFICADO_PADRAO
 
-        template_padrao = TEMPLATE_CERTIFICADO_PADRAO().replace("'", "''")
+        template_padrao = TEMPLATE_CERTIFICADO_PADRAO()
         await conn.execute(
-            text(f"""
+            text("""
             INSERT INTO lms.modelos_certificado (nome, template_html, logo_url, assinatura_digital, ativo)
-            SELECT 'Padrao GE21', '{template_padrao}', NULL, false, true
+            SELECT 'Padrao GE21', :template, NULL, false, true
             WHERE NOT EXISTS (SELECT 1 FROM lms.modelos_certificado)
-            """)
+            """),
+            {"template": template_padrao},
         )
     logger.info("Database seeded successfully")
 
@@ -283,6 +286,41 @@ async def _registrar_acesso_escrita(method: str, path: str, authorization: str) 
     except Exception:
         pass
 
+
+# Security headers middleware (raw ASGI, no BaseHTTPMiddleware)
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+    "X-XSS-Protection": "1; mode=block",
+}
+
+
+class SecurityHeadersMiddleware:
+    """Adiciona headers de seguranca em toda resposta HTTP (OWASP)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                for name, value in SECURITY_HEADERS.items():
+                    headers.append((name.lower().encode(), value.encode()))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Request logging middleware (raw ASGI, no BaseHTTPMiddleware)
 class LogRequestsMiddleware:

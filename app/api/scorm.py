@@ -1,7 +1,7 @@
 import io
-import xml.etree.ElementTree as ET
 import zipfile
 
+from defusedxml import ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
