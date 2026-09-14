@@ -108,6 +108,7 @@ async def validar_certificado(
     usuario = await db.get(Usuario, cert.usuario_id)
     curso = await db.get(Curso, cert.curso_id)
     return CertificadoPublicoRead(
+        hash_validacao=hash_validacao,
         usuario_nome=usuario.nome_completo if usuario else "",
         curso_titulo=curso.titulo if curso else "",
         carga_horaria=cert.carga_horaria,

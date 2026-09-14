@@ -51,6 +51,7 @@ class CertificadoPublicoRead(BaseModel):
     """Resposta da validacao publica (sem token) -- so o que quem confere precisa,
     nada de identificadores internos (usuario_id, modelo_id) -- issue 33."""
 
+    hash_validacao: str
     usuario_nome: str
     curso_titulo: str
     carga_horaria: int

@@ -103,7 +103,7 @@ All routes are under `/api/v1`. `main.py` passes `prefix=PREFIX` to each `includ
 - **Deploy flow:** pushing `development` deploys **dev**, `homologacao` deploys **hom** — GitHub Actions → tarball to S3 → AWS SSM → `docker build` + `docker compose up` on EC2 (`i-03226a7435365244a`). No approval gate.
 - **THE DEPLOY DOES NOT RUN MIGRATIONS.** There is no `alembic` step in `deploy.yml` nor in the `Dockerfile`. Apply `alembic upgrade head` against the target DB **yourself, before** the push — see Convictions.
 - **`/health`** now includes `check_migrations` and `check_database`/`check_storage`. `check_migrations` is intentionally excluded from the overall status: the deploy uses HTTP 200 as gate and a stale schema shouldn't fail the app. `GET /health` checks DB reachability and S3 access.
-- **Roadmap:** US-04 ✅, US-05 ✅, US-06 ✅, US-07 ✅, US-08 ✅, Pendências Técnicas ✅, US-11/12/13/14 ✅, US-15/16/17 ✅ (certificados, dashboards/analytics, logs de auditoria). Issues 17-24, 25-31 done.
+- **Roadmap:** US-04 ✅, US-05 ✅, US-06 ✅, US-07 ✅, US-08 ✅, Pendências Técnicas ✅, US-11/12/13/14 ✅, US-15/16/17 ✅ (certificados, dashboards/analytics, logs de auditoria), US-18 ✅ (integracao E2E, carga 10k, seguranca, LGPD). Issues 17-24, 25-31 done.
 - **Known issues:** SMTP não configurado (`esqueci-senha` não envia emails). Teams: código pronto mas **não configurado** — precisa das 4 vars (`TEAMS_*`) no ambiente do deploy + Application Access Policy (PowerShell) do organizer; até lá `criar_reuniao_teams:true` retorna 422.
 - **Alembic migrations:** 20 migrations. Head atual: `c7d3e9a1f204` (`conteudo_disponivel_marca_bucket_morto_issue_46`). Chain new ones with `down_revision` pointing to the current head — **never** to an old anchor.
 - **`scripts/init_db.sql`** creates the `lms` schema, extensions (`pgcrypto`, `citext`), seeds profiles/niveis, and adds performance indexes — idempotent (`ON CONFLICT DO NOTHING`).
@@ -476,6 +476,14 @@ Todas as 8 issues levantadas pelo front foram corrigidas, validadas em dev e hom
 - **30** — fechada (falso positivo: rotas do dashboard eram da US-16)
 - **31** — presença: `PresencaAula` é a fonte oficial; `sessoes/presenca` marcadas `deprecated=True` (legado)
 
+### US-18: Integração End-to-End e Testes de Aceitação ✅ CONCLUÍDA
+- **T-18.1** — Suíte completa: 35 arquivos (~305 testes). Relatório em `docs/us18-aceitacao.md`. Achados corrigidos: WebSocket (`TestClient` sync vs pytest-asyncio → novo `ws_client` ASGI async, 13 testes WS determinísticos) + certificado (`hash_validacao` na validacao publica).
+- **T-18.2** — Carga 10k: `scripts/locustfile.py` (11 cenarios ponderados, headless `-u 10000 -r 50`, pool de credenciais) + `scripts/prepare_load_users.py`. Banco de teste reconciliado (`ad9d802fbf09` → `c7d3e9a1f204`); execucao real contra `localhost` (4 workers) com 20 usuarios: 0% falha, latencia medida.
+- **T-18.3** — Seguranca: headers (X-Content-Type-Options, X-Frame-Options, CSP, Referrer-Policy, Permissions-Policy), CI `bandit`+`safety`, corrigido XXE no SCORM (`defusedxml` em vez de `xml.etree`), 2 SQL injection nos seeds parametrizados. Bandit: 0 Medium/0 High.
+- **T-18.4** — Acessibilidade WCAG: nao se aplica ao backend (API JSON); responsabilidade do frontend.
+- **T-18.5** — LGPD: `log_acesso`/`log_auditoria` nao gravam CPF/senha/telefone; email/nome/IP minimos e necessarios (Art. 7º IX).
+- **T-18.6** — Bugs corrigidos: WS loop, hash_validacao, XXE SCORM, SQL seeds.
+
 ## Próximas Prioridades (segundo ROADMAP.md)
 
 - Estrutura Organizacional (estados, municípios, secretarias, unidades)
@@ -499,6 +507,9 @@ Todas as 8 issues levantadas pelo front foram corrigidas, validadas em dev e hom
 - ✅ Integração Teams (opcional — requer infra)
 - ✅ Recuperação de senha (SMTP config)
 - ✅ Testes abrangentes (35 arquivos)
+- ✅ Segurança (OWASP headers, bandit, XXE corrigido)
+- ✅ Carga 10k (locust headless)
+- ✅ LGPD auditada (US-18)
 
 ## T-06.10: Integração Teams + Artefato S3 (14/07/2026)
 
