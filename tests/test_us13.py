@@ -43,7 +43,10 @@ async def _criar_aula(client):
             "data_hora_fim": "2026-08-10T15:00:00Z",
         },
     )
-    return r.json()["id"]
+    aula_id = r.json()["id"]
+    # Inscreve o admin para poder entrar na aula / registrar presenca.
+    await client.post("/api/v1/cursos/inscricoes", json={"curso_id": curso_id})
+    return aula_id
 
 
 class TestChatAulaREST:
@@ -87,28 +90,25 @@ class TestChatAulaREST:
 
 
 class TestChatAulaWebSocket:
-    async def test_websocket_envia_e_recebe_mensagem(self, client, admin_token):
+    async def test_websocket_envia_e_recebe_mensagem(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
-        from fastapi.testclient import TestClient
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws:
+            inicial = await ws.receive_json()
+            assert inicial["type"] == "presenca_inicial", inicial
+            await ws.send_json({"texto": "ola via websocket"})
+            data = await ws.receive_json()
+            assert data["type"] == "mensagem"
+            assert data["texto"] == "ola via websocket"
+            assert data["usuario_nome"] != ""
 
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws:
-                inicial = ws.receive_json()
-                assert inicial["type"] == "presenca_inicial", inicial
-                ws.send_json({"texto": "ola via websocket"})
-                data = ws.receive_json()
-                assert data["type"] == "mensagem"
-                assert data["texto"] == "ola via websocket"
-                assert data["usuario_nome"] != ""
-
-    async def test_websocket_token_invalido_recusado(self):
-        from fastapi.testclient import TestClient
+    async def test_websocket_token_invalido_recusado(self, ws_client):
         from starlette.websockets import WebSocketDisconnect
 
-        with TestClient(app) as tc:
-            with pytest.raises(WebSocketDisconnect):
-                with tc.websocket_connect("/api/v1/cursos/aulas/1/chat/ws?token=invalido"):
-                    pass
+        with pytest.raises(WebSocketDisconnect):
+            async with ws_client.websocket_connect("/api/v1/cursos/aulas/1/chat/ws?token=invalido"):
+                pass
 
 
 class TestModeracaoChat:
@@ -150,23 +150,25 @@ class TestModeracaoChat:
 
 
 class TestComunicacaoTempoReal:
-    async def test_broadcast_entre_duas_conexoes(self, client, admin_token):
+    async def test_broadcast_entre_duas_conexoes(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
-        from fastapi.testclient import TestClient
 
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws1:
-                assert ws1.receive_json()["type"] == "presenca_inicial"
-                with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws2:
-                    assert ws2.receive_json()["type"] == "presenca_inicial"
-                    ws1.send_json({"texto": "broadcast para todos"})
-                    data1 = ws1.receive_json()
-                    data2 = ws2.receive_json()
-                    assert data1["texto"] == "broadcast para todos"
-                    assert data2["texto"] == "broadcast para todos"
-                    assert data1["id"] == data2["id"]
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws1:
+            assert (await ws1.receive_json())["type"] == "presenca_inicial"
+            async with ws_client.websocket_connect(
+                f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+            ) as ws2:
+                assert (await ws2.receive_json())["type"] == "presenca_inicial"
+                await ws1.send_json({"texto": "broadcast para todos"})
+                data1 = await ws1.receive_json()
+                data2 = await ws2.receive_json()
+                assert data1["texto"] == "broadcast para todos"
+                assert data2["texto"] == "broadcast para todos"
+                assert data1["id"] == data2["id"]
 
-    async def test_usuario_silenciado_bloqueado_no_websocket(self, client, admin_token):
+    async def test_usuario_silenciado_bloqueado_no_websocket(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
         from datetime import datetime, timedelta, timezone
         from urllib.parse import quote
@@ -179,15 +181,14 @@ class TestComunicacaoTempoReal:
         )
         assert r.status_code == status.HTTP_200_OK
 
-        from fastapi.testclient import TestClient
-
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws:
-                assert ws.receive_json()["type"] == "presenca_inicial"
-                ws.send_json({"texto": "silenciado nao pode enviar"})
-                data = ws.receive_json()
-                assert data["type"] == "erro"
-                assert "silenciado" in data["detail"].lower()
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws:
+            assert (await ws.receive_json())["type"] == "presenca_inicial"
+            await ws.send_json({"texto": "silenciado nao pode enviar"})
+            data = await ws.receive_json()
+            assert data["type"] == "erro"
+            assert "silenciado" in data["detail"].lower()
 
 
 class TestUsuarioPerfilNoChat:
@@ -205,16 +206,16 @@ class TestUsuarioPerfilNoChat:
         r = await client.get(f"/api/v1/cursos/aulas/{aula_id}/chat")
         assert r.json()[0]["usuario_perfil"] == "administrador_geral"
 
-    async def test_admin_tem_perfil_no_broadcast_ws(self, client, admin_token):
+    async def test_admin_tem_perfil_no_broadcast_ws(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
-        from fastapi.testclient import TestClient
 
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws:
-                ws.receive_json()
-                ws.send_json({"texto": "via ws"})
-                data = ws.receive_json()
-                assert data["usuario_perfil"] == "administrador_geral"
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws:
+            await ws.receive_json()
+            await ws.send_json({"texto": "via ws"})
+            data = await ws.receive_json()
+            assert data["usuario_perfil"] == "administrador_geral"
 
     async def test_participante_sem_perfil_destacado(self, client):
         r = await client.post("/api/v1/cursos", json={"titulo": "Curso Chat Perfil", "descricao": "x", "ordem": 0})
@@ -247,7 +248,7 @@ class TestUsuarioPerfilNoChat:
 class TestChatAulaExigeInscricao:
     """Issue 43: chat da aula exige inscricao no curso (ou permissao de moderar)."""
 
-    async def test_forasteiro_nao_le_nem_envia_chat_da_aula(self, client):
+    async def test_forasteiro_nao_le_nem_envia_chat_da_aula(self, client, ws_client):
         r = await client.post("/api/v1/cursos", json={"titulo": "Curso Chat Fechado", "descricao": "x", "ordem": 0})
         curso_id = r.json()["id"]
         r = await client.post(
@@ -273,57 +274,58 @@ class TestChatAulaExigeInscricao:
         finally:
             app.dependency_overrides.pop(get_current_user, None)
 
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        with TestClient(app) as tc:
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={forasteiro_token}"):
-                    pass
-            assert exc_info.value.code == 4403
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            async with ws_client.websocket_connect(
+                f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={forasteiro_token}"
+            ):
+                pass
+        assert exc_info.value.code == 4403
 
 
 class TestPresencaWebSocketDisconnect:
     """Issue 41 (ponto 1): fechar a aba avisa quem mais esta no socket."""
 
-    async def test_disconnect_transmite_saiu(self, client, admin_token):
+    async def test_disconnect_transmite_saiu(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
-        from fastapi.testclient import TestClient
 
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as observador:
-                assert observador.receive_json()["type"] == "presenca_inicial"
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as observador:
+            assert (await observador.receive_json())["type"] == "presenca_inicial"
 
-                with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"):
-                    pass  # fecha ao sair do "with" -- equivalente a fechar a aba
+            async with ws_client.websocket_connect(
+                f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+            ):
+                pass  # fecha ao sair do "with" -- equivalente a fechar a aba
 
-                evento = observador.receive_json()
-                assert evento["type"] == "presenca", evento
-                assert evento["acao"] == "saiu", evento
+            evento = await observador.receive_json()
+            assert evento["type"] == "presenca", evento
+            assert evento["acao"] == "saiu", evento
 
 
 class TestPresencaInicialUsaPresencaOficial:
     """Issue 41 (ponto 2): presenca_inicial vem de PresencaAula, nao de quem tem o socket aberto."""
 
-    async def test_socket_sem_entrar_nao_aparece_na_lista(self, client, admin_token):
+    async def test_socket_sem_entrar_nao_aparece_na_lista(self, client, admin_token, ws_client):
         aula_id = await _criar_aula(client)
-        from fastapi.testclient import TestClient
 
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws:
-                inicial = ws.receive_json()
-                assert inicial["type"] == "presenca_inicial"
-                assert inicial["presentes"] == [], "sem presenca oficial (sem /entrar), a lista deve vir vazia"
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws:
+            inicial = await ws.receive_json()
+            assert inicial["type"] == "presenca_inicial"
+            assert inicial["presentes"] == [], "sem presenca oficial (sem /entrar), a lista deve vir vazia"
 
-    async def test_presenca_sem_socket_aparece_na_lista(self, client, admin_token, admin_user):
+    async def test_presenca_sem_socket_aparece_na_lista(self, client, admin_token, admin_user, ws_client):
         aula_id = await _criar_aula(client)
         r = await client.post(f"/api/v1/cursos/aulas/{aula_id}/entrar")
         assert r.status_code == status.HTTP_201_CREATED, r.text
 
-        from fastapi.testclient import TestClient
-
-        with TestClient(app) as tc:
-            with tc.websocket_connect(f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}") as ws:
-                inicial = ws.receive_json()
-                usuario_ids = [p["usuario_id"] for p in inicial["presentes"]]
-                assert str(admin_user.id) in usuario_ids
+        async with ws_client.websocket_connect(
+            f"/api/v1/cursos/aulas/{aula_id}/chat/ws?token={admin_token}"
+        ) as ws:
+            inicial = await ws.receive_json()
+            usuario_ids = [p["usuario_id"] for p in inicial["presentes"]]
+            assert str(admin_user.id) in usuario_ids
