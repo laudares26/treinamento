@@ -18,7 +18,7 @@ class Usuario(Base):
     nome_completo: Mapped[str] = mapped_column(String(200), nullable=False)
     email: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
     cpf: Mapped[str | None] = mapped_column(String(14), unique=True)
-    senha_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    senha_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     orgao_instituicao: Mapped[str | None] = mapped_column(String(200))
     cargo: Mapped[str | None] = mapped_column(String(150))
     telefone: Mapped[str | None] = mapped_column(String(20), unique=True)
@@ -36,6 +36,8 @@ class Usuario(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     silenciado_ate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    keycloak_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    auth_provider: Mapped[str] = mapped_column(String(20), default="local", nullable=False, server_default="local")
 
     perfis: Mapped[list["UsuarioPerfil"]] = relationship(
         back_populates="usuario",

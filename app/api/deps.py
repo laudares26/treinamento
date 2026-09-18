@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.usuario import Perfil, Usuario, UsuarioPerfil
 from app.services.auth import decode_token
+from app.services.keycloak import mapear_roles_keycloak, validar_token_keycloak
 from app.services.rbac import has_permission
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -23,6 +24,81 @@ async def get_current_user(
         detail="Token invalido ou expirado",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # 1) Tentar Keycloak (RS256 via JWKS) — staging idesp-realm
+    kc_payload = validar_token_keycloak(token)
+    if kc_payload is not None:
+        sub = kc_payload.get("sub")
+        email = kc_payload.get("email") or kc_payload.get("preferred_username") or kc_payload.get("upn")
+        if not sub:
+            raise credentials_exception
+        # Busca por keycloak_sub
+        result = await db.execute(
+            select(Usuario)
+            .options(selectinload(Usuario.perfis).selectinload(UsuarioPerfil.perfil))
+            .where(Usuario.keycloak_sub == str(sub))
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            if not user.ativo:
+                raise credentials_exception
+            return user
+        # Fallback por email (vincula conta existente)
+        if email:
+            result = await db.execute(
+                select(Usuario)
+                .options(selectinload(Usuario.perfis).selectinload(UsuarioPerfil.perfil))
+                .where(Usuario.email == str(email).lower())
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.keycloak_sub = str(sub)
+                user.auth_provider = "keycloak"
+                await db.commit()
+                await db.refresh(user)
+                if not user.ativo:
+                    raise credentials_exception
+                return user
+        # Provisionamento: cria usuário vinculado ao Keycloak
+        nome = kc_payload.get("name") or kc_payload.get("given_name") or email or f"keycloak-{sub[:8]}"
+        user = Usuario(
+            nome_completo=str(nome)[:200],
+            email=str(email).lower() if email else f"{sub}@keycloak.local",
+            senha_hash=None,
+            ativo=True,
+            status_credenciamento="aprovado",
+            aceite_lgpd=True,
+            keycloak_sub=str(sub),
+            auth_provider="keycloak",
+        )
+        db.add(user)
+        await db.flush()
+        # Mapear roles Keycloak -> perfil local (se não mapear, usa participante)
+        roles = mapear_roles_keycloak(kc_payload)
+        perfil_nome = None
+        for cand in ["administrador_geral", "administrador", "instrutor", "auditor", "gestor", "participante"]:
+            if cand in roles:
+                perfil_nome = cand
+                break
+        if not perfil_nome:
+            perfil_nome = "participante"
+        result = await db.execute(select(Perfil).where(Perfil.nome == perfil_nome))
+        perfil = result.scalar_one_or_none()
+        if perfil:
+            db.add(UsuarioPerfil(usuario_id=user.id, perfil_id=perfil.id))
+            await db.commit()
+            # Recarregar com perfis
+            result = await db.execute(
+                select(Usuario)
+                .options(selectinload(Usuario.perfis).selectinload(UsuarioPerfil.perfil))
+                .where(Usuario.id == user.id)
+            )
+            user = result.scalar_one()
+        else:
+            await db.commit()
+        return user
+
+    # 2) Fallback: JWT interno (HS256)
     payload = decode_token(token)
     if payload is None:
         raise credentials_exception
