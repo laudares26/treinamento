@@ -76,7 +76,9 @@ class UsuarioAulaSilenciado(Base):
     usuario_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("lms.usuarios.id", ondelete="CASCADE"), primary_key=True
     )
-    aula_id: Mapped[int] = mapped_column(Integer, ForeignKey("lms.aulas_sincronas.id", ondelete="CASCADE"), primary_key=True)
+    aula_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("lms.aulas_sincronas.id", ondelete="CASCADE"), primary_key=True
+    )
     silenciado_ate: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
