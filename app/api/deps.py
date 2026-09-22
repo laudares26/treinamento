@@ -106,7 +106,9 @@ async def get_current_user(
     if user_id is None:
         raise credentials_exception
     result = await db.execute(
-        select(Usuario).options(selectinload(Usuario.perfis).selectinload(UsuarioPerfil.perfil)).where(Usuario.id == uuid.UUID(user_id))
+        select(Usuario)
+        .options(selectinload(Usuario.perfis).selectinload(UsuarioPerfil.perfil))
+        .where(Usuario.id == uuid.UUID(user_id))
     )
     user = result.scalar_one_or_none()
     if user is None or not user.ativo:
@@ -147,7 +149,8 @@ def require_permissao(permissao: str):
         if not any(has_permission(p.nome, permissao) for p in perfis):
             nomes = ", ".join(p.nome for p in perfis)
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=f"Nenhum dos perfis '{nomes}' tem permissão '{permissao}'."
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Nenhum dos perfis '{nomes}' tem permissão '{permissao}'.",
             )
 
         return current_user
