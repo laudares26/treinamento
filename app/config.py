@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lms_idesp"
     SECRET_KEY: str = ""  # gere com: openssl rand -hex 32
     ALGORITHM: str = "HS256"
+    RATE_LIMIT_ENABLED: bool = True
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
 
     RESET_TOKEN_EXPIRE_MINUTES: int = 60
     BASE_URL: str = "http://localhost:8000/api/v1"
+
+    # Fuso para exibir datas em textos formatados no backend (ex.: corpo de
+    # notificacao) -- nao vem do front, ver issue 40 para o porque.
+    TIMEZONE_EXIBICAO: str = "America/Sao_Paulo"
 
     # Storage (desenvolvimento)
     STORAGE_BACKEND: str = "local"
@@ -41,6 +46,14 @@ class Settings(BaseSettings):
     TEAMS_CLIENT_ID: str = ""
     TEAMS_CLIENT_SECRET: str = ""
     TEAMS_ORGANIZER_EMAIL: str = ""
+
+    # Keycloak (staging — idesp-realm / treinamento-front)
+    KEYCLOAK_SERVER: str = ""
+    KEYCLOAK_REALM: str = ""
+    KEYCLOAK_ISSUER: str = ""
+    KEYCLOAK_CLIENT_ID: str = ""
+    KEYCLOAK_CLIENT_SECRET: str = ""
+    KEYCLOAK_JWKS_URI: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

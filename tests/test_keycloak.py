@@ -1,0 +1,136 @@
+import time
+import uuid
+from unittest.mock import MagicMock, patch
+
+import jwt
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from app.config import settings
+
+
+def _gen_keypair():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    public_pem = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return private_pem, public_pem
+
+
+def _make_token(private_pem, payload_overrides=None, kid="test-kid"):
+    payload = {
+        "iss": settings.KEYCLOAK_ISSUER,
+        "aud": settings.KEYCLOAK_CLIENT_ID,
+        "sub": "kc-test-sub-001",
+        "email": "kc.test@test.com",
+        "name": "KC Test",
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+        "realm_access": {"roles": ["participante"]},
+        "resource_access": {settings.KEYCLOAK_CLIENT_ID: {"roles": ["participante"]}},
+    }
+    if payload_overrides:
+        payload.update(payload_overrides)
+    return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": kid})
+
+
+def test_validar_token_keycloak_ok():
+    private_pem, public_pem = _gen_keypair()
+    token = _make_token(private_pem)
+    with patch("app.services.keycloak.PyJWKClient") as mock_jwks:
+        mock_inst = MagicMock()
+        mock_key = MagicMock()
+        mock_key.key = public_pem.decode()
+        mock_inst.get_signing_key_from_jwt.return_value = mock_key
+        mock_jwks.return_value = mock_inst
+        import app.services.keycloak as kc
+
+        kc._JWKS_CLIENT = mock_inst
+        kc._JWKS_CACHED_AT = time.time()
+        from app.services.keycloak import validar_token_keycloak
+
+        res = validar_token_keycloak(token)
+        assert res is not None and res["sub"] == "kc-test-sub-001"
+
+
+def test_validar_token_keycloak_expirado():
+    private_pem, public_pem = _gen_keypair()
+    token = _make_token(private_pem, {"exp": int(time.time()) - 10})
+    with patch("app.services.keycloak.PyJWKClient") as mock_jwks:
+        mock_inst = MagicMock()
+        mock_key = MagicMock()
+        mock_key.key = public_pem.decode()
+        mock_inst.get_signing_key_from_jwt.return_value = mock_key
+        mock_jwks.return_value = mock_inst
+        import app.services.keycloak as kc
+
+        kc._JWKS_CLIENT = mock_inst
+        kc._JWKS_CACHED_AT = time.time()
+        from app.services.keycloak import validar_token_keycloak
+
+        assert validar_token_keycloak(token) is None
+
+
+def test_validar_token_keycloak_iss_errado():
+    private_pem, public_pem = _gen_keypair()
+    token = _make_token(private_pem, {"iss": "https://evil.example.com/realms/fake"})
+    with patch("app.services.keycloak.PyJWKClient") as mock_jwks:
+        mock_inst = MagicMock()
+        mock_key = MagicMock()
+        mock_key.key = public_pem.decode()
+        mock_inst.get_signing_key_from_jwt.return_value = mock_key
+        mock_jwks.return_value = mock_inst
+        import app.services.keycloak as kc
+
+        kc._JWKS_CLIENT = mock_inst
+        kc._JWKS_CACHED_AT = time.time()
+        from app.services.keycloak import validar_token_keycloak
+
+        assert validar_token_keycloak(token) is None
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_keycloak_provisiona(client):
+    # client fixture cria admin e DB, mas vamos mockar um token Keycloak novo
+    private_pem, public_pem = _gen_keypair()
+    sub = f"kc-provision-{uuid.uuid4().hex[:8]}"
+    email = f"{sub}@test.com"
+    token = _make_token(private_pem, {"sub": sub, "email": email, "realm_access": {"roles": ["participante"]}})
+    with patch("app.services.keycloak.PyJWKClient") as mock_jwks:
+        mock_inst = MagicMock()
+        mock_key = MagicMock()
+        mock_key.key = public_pem.decode()
+        mock_inst.get_signing_key_from_jwt.return_value = mock_key
+        mock_jwks.return_value = mock_inst
+        import app.services.keycloak as kc
+
+        kc._JWKS_CLIENT = mock_inst
+        kc._JWKS_CACHED_AT = time.time()
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from app.api.deps import get_current_user
+        from app.database import engine
+
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as db:
+            with patch(
+                "app.api.deps.validar_token_keycloak",
+                return_value={
+                    "sub": sub,
+                    "email": email,
+                    "name": email,
+                    "iss": settings.KEYCLOAK_ISSUER,
+                    "aud": settings.KEYCLOAK_CLIENT_ID,
+                    "exp": int(time.time()) + 300,
+                    "realm_access": {"roles": ["participante"]},
+                    "resource_access": {settings.KEYCLOAK_CLIENT_ID: {"roles": ["participante"]}},
+                },
+            ):
+                user = await get_current_user(token=token, db=db)
+                assert user.email == email
+                assert user.keycloak_sub == sub
+                assert user.auth_provider == "keycloak"
